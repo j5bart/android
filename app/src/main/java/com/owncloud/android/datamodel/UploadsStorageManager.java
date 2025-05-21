@@ -46,6 +46,7 @@ import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
 import java.util.Observable;
+import java.util.function.Consumer;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -478,6 +479,44 @@ public class UploadsStorageManager extends Observable {
         return uploads.toArray(new OCUpload[0]);
     }
 
+    private OCUpload[] getUploadsByPageAsync(Consumer<OCUpload[]> newResultsPageCallback, @Nullable String selection, @Nullable String... selectionArgs) {
+        final List<OCUpload> uploads = new ArrayList<>();
+        long page = 0;
+        long rowsRead;
+        long rowsTotal = 0;
+        long lastRowID = -1;
+
+        do {
+            final List<OCUpload> uploadsPage = getUploadPage(lastRowID, selection, selectionArgs);
+            rowsRead = uploadsPage.size();
+            rowsTotal += rowsRead;
+            if (!uploadsPage.isEmpty()) {
+                lastRowID = uploadsPage.get(uploadsPage.size() - 1).getUploadId();
+            }
+            Log_OC.v(TAG, String.format(Locale.ENGLISH,
+                                        "getUploads() got %d rows from page %d, %d rows total so far, last ID %d",
+                                        rowsRead,
+                                        page,
+                                        rowsTotal,
+                                        lastRowID
+                                       ));
+            uploads.addAll(uploadsPage);
+            newResultsPageCallback.accept(uploadsPage.toArray(new OCUpload[0]));
+            page++;
+        } while (rowsRead > 0);
+
+
+        Log_OC.v(TAG, String.format(Locale.ENGLISH,
+                                    "getUploads() returning %d (%d) rows after reading %d pages",
+                                    rowsTotal,
+                                    uploads.size(),
+                                    page
+                                   ));
+
+
+        return uploads.toArray(new OCUpload[0]);
+    }
+
     @NonNull
     private List<OCUpload> getUploadPage(final long afterId, @Nullable String selection, @Nullable String... selectionArgs) {
         return getUploadPage(QUERY_PAGE_SIZE, afterId, true, selection, selectionArgs);
@@ -624,9 +663,20 @@ public class UploadsStorageManager extends Observable {
         return getCurrentAndPendingUploadsForAccount(user.getAccountName());
     }
 
+    public OCUpload[] getCurrentAndPendingUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+        User user = currentAccountProvider.getUser();
+
+        return getCurrentAndPendingUploadsForAccountAsync(user.getAccountName(), resultsPageCallback);
+    }
+
     public OCUpload[] getCurrentAndPendingUploadsForAccount(final @NonNull String accountName) {
         String inProgressUploadsSelection = getInProgressAndDelayedUploadsSelection();
         return getUploads(inProgressUploadsSelection, accountName);
+    }
+
+    public OCUpload[] getCurrentAndPendingUploadsForAccountAsync(final @NonNull String accountName, Consumer<OCUpload[]> resultsPageCallback) {
+        String inProgressUploadsSelection = getInProgressAndDelayedUploadsSelection();
+        return getUploadsByPageAsync(resultsPageCallback, inProgressUploadsSelection, accountName);
     }
 
     public OCUpload[] getCurrentUploadsForAccount(final @NonNull String accountName) {
@@ -680,10 +730,24 @@ public class UploadsStorageManager extends Observable {
                               ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
     }
 
+    public OCUpload[] getFinishedUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+        User user = currentAccountProvider.getUser();
+
+        return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_SUCCEEDED.value + AND +
+                              ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
+    }
+
     public OCUpload[] getCancelledUploadsForCurrentAccount() {
         User user = currentAccountProvider.getUser();
 
         return getUploads(ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_CANCELLED.value + AND +
+                              ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
+    }
+
+    public OCUpload[] getCancelledUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+        User user = currentAccountProvider.getUser();
+
+        return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_CANCELLED.value + AND +
                               ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
     }
 
@@ -710,6 +774,21 @@ public class UploadsStorageManager extends Observable {
                           user.getAccountName());
     }
 
+    public OCUpload[] getFailedButNotDelayedUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+        User user = currentAccountProvider.getUser();
+
+        return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_FAILED.value +
+                              AND + ProviderTableMeta.UPLOADS_LAST_RESULT +
+                              ANGLE_BRACKETS + UploadResult.DELAYED_FOR_WIFI.getValue() +
+                              AND + ProviderTableMeta.UPLOADS_LAST_RESULT +
+                              ANGLE_BRACKETS + UploadResult.LOCK_FAILED.getValue() +
+                              AND + ProviderTableMeta.UPLOADS_LAST_RESULT +
+                              ANGLE_BRACKETS + UploadResult.DELAYED_FOR_CHARGING.getValue() +
+                              AND + ProviderTableMeta.UPLOADS_LAST_RESULT +
+                              ANGLE_BRACKETS + UploadResult.DELAYED_IN_POWER_SAVE_MODE.getValue() +
+                              AND + ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL,
+                          user.getAccountName());
+    }
     /**
      * Get all failed uploads, except for those that were not performed due to lack of Wifi connection.
      *
