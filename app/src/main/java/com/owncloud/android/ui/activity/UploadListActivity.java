@@ -172,20 +172,9 @@ public class UploadListActivity extends FileActivity {
 
         viewThemeUtils.androidx.themeSwipeRefreshLayout(swipeListRefreshLayout);
         swipeListRefreshLayout.setOnRefreshListener(this::refresh);
-
-        loadItems();
-        uploadListAdapter.loadUploadItemsFromDb();
-    }
-
-    private void loadItems() {
-        uploadListAdapter.loadUploadItemsFromDb();
-
-        if (uploadListAdapter.getItemCount() > 0) {
-            return;
-        }
-
         swipeListRefreshLayout.setVisibility(View.VISIBLE);
-        swipeListRefreshLayout.setRefreshing(false);
+
+        uploadListAdapter.loadUploadItemsFromDb();
     }
 
     private void refresh() {

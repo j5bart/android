@@ -15,6 +15,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
+import android.os.Looper;
 import android.text.format.DateUtils;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -56,8 +57,19 @@ import com.owncloud.android.utils.MimeTypeUtil;
 import com.owncloud.android.utils.theme.ViewThemeUtils;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 
 import androidx.annotation.NonNull;
 
@@ -81,6 +93,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
     private NotificationManager mNotificationManager;
 
     private final FileUploadHelper uploadHelper = FileUploadHelper.Companion.instance();
+
+    private final ExecutorService executorService = Executors.newCachedThreadPool();
 
     @Override
     public int getSectionCount() {
@@ -130,8 +144,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
                         return;
                     }
 
-                    uploadHelper.cancelFileUploads(Arrays.asList(group.items), accountName);
-                    parentActivity.runOnUiThread(this::loadUploadItemsFromDb);
+                    uploadHelper.cancelFileUploads(Arrays.asList(group.getItems()), accountName);
+                    this.loadUploadItemsFromDb();
                 }).start();
                 case FINISHED -> {
                     uploadsStorageManager.clearSuccessfulUploads();
@@ -166,7 +180,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
                         connectivityService,
                         accountManager,
                         powerManagementService);
-                    parentActivity.runOnUiThread(this::loadUploadItemsFromDb);
+                    this.loadUploadItemsFromDb();
                 }).start();
             }
 
@@ -211,7 +225,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
                 accountManager,
                 powerManagementService);
 
-            parentActivity.runOnUiThread(this::loadUploadItemsFromDb);
+            this.loadUploadItemsFromDb();
             parentActivity.runOnUiThread(() -> {
                 if (showNotExistMessage) {
                     showNotExistMessage();
@@ -248,6 +262,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         this.clock = clock;
         this.viewThemeUtils = viewThemeUtils;
 
+
         uploadGroups = new UploadGroup[4];
 
         shouldShowHeadersForEmptySections(false);
@@ -256,7 +271,16 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
                                           parentActivity.getString(R.string.uploads_view_group_current_uploads)) {
             @Override
             public void refresh() {
-                fixAndSortItems(uploadsStorageManager.getCurrentAndPendingUploadsForCurrentAccount());
+                fixAndSortItems(false, uploadsStorageManager.getCurrentAndPendingUploadsForCurrentAccount());
+            }
+
+            @Override
+            public void refreshAsync(Runnable onComplete) {
+                var allItems = uploadsStorageManager.getCurrentAndPendingUploadsForCurrentAccountAsync(
+                    items -> fixAndSortItems(true, items)
+                                                                                                      );
+                fixAndSortItems(false, allItems);
+                onComplete.run();
             }
         };
 
@@ -264,7 +288,16 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
                                           parentActivity.getString(R.string.uploads_view_group_failed_uploads)) {
             @Override
             public void refresh() {
-                fixAndSortItems(uploadsStorageManager.getFailedButNotDelayedUploadsForCurrentAccount());
+                fixAndSortItems(false, uploadsStorageManager.getFailedButNotDelayedUploadsForCurrentAccount());
+            }
+
+            @Override
+            public void refreshAsync(Runnable onComplete) {
+                var allItems = uploadsStorageManager.getFailedButNotDelayedUploadsForCurrentAccountAsync(
+                    items -> fixAndSortItems(true, items)
+                                                                                                         );
+                fixAndSortItems(false, allItems);
+                onComplete.run();
             }
         };
 
@@ -273,7 +306,16 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
                                               R.string.uploads_view_group_manually_cancelled_uploads)) {
             @Override
             public void refresh() {
-                fixAndSortItems(uploadsStorageManager.getCancelledUploadsForCurrentAccount());
+                fixAndSortItems(false, uploadsStorageManager.getCancelledUploadsForCurrentAccount());
+            }
+
+            @Override
+            public void refreshAsync(Runnable onComplete) {
+                var allItems = uploadsStorageManager.getCancelledUploadsForCurrentAccountAsync(
+                    items -> fixAndSortItems(true, items)
+                                                                                               );
+                fixAndSortItems(false, allItems);
+                onComplete.run();
             }
         };
 
@@ -281,13 +323,48 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
                                           parentActivity.getString(R.string.uploads_view_group_finished_uploads)) {
             @Override
             public void refresh() {
-                fixAndSortItems(uploadsStorageManager.getFinishedUploadsForCurrentAccount());
+                fixAndSortItems(false, uploadsStorageManager.getFinishedUploadsForCurrentAccount());
+            }
+
+            @Override
+            public void refreshAsync(Runnable onComplete) {
+                var allItems = uploadsStorageManager.getFinishedUploadsForCurrentAccountAsync(
+                    items -> fixAndSortItems(true, items)
+                                                                                              );
+                fixAndSortItems(false, allItems);
+                onComplete.run();
             }
         };
 
         showUser = accountManager.getAccounts().length > 1;
 
-        loadUploadItemsFromDb();
+        for (UploadGroup uploadGroup : uploadGroups) {
+            uploadGroup.addItemsUpdatedListener(this::tryNotifyDataSetChanged);
+        }
+    }
+
+    Lock tryNotifyDataSetChangedLock = new ReentrantLock();
+
+    /**
+     * Attempts to notifyDataSetChanged only briefly
+     */
+    private void tryNotifyDataSetChanged() {
+        Log_OC.d(TAG, "tryNotifyDataSetChanged - attempting to notifyDataSetChanged");
+        if (Looper.getMainLooper().getThread() == Thread.currentThread()) {
+            Log_OC.w(TAG, "tryNotifyDataSetChanged - being run on UI thread!");
+        }
+        try {
+            if (tryNotifyDataSetChangedLock.tryLock()) {
+                parentActivity.runOnUiThread(this::notifyDataSetChanged);
+                Thread.sleep(1000); // prevent any other updates within next 500ms
+                tryNotifyDataSetChangedLock.unlock();
+                Log_OC.d(TAG, "tryNotifyDataSetChanged - notifyDataSetChanged: complete");
+            } else {
+                Log_OC.d(TAG, "tryNotifyDataSetChanged - notifyDataSetChanged: failed to obtain lock within 500ms");
+            }
+        } catch (InterruptedException e) {
+            Log_OC.d(TAG, "tryNotifyDataSetChanged - threw InterruptedException!");
+        }
     }
 
 
@@ -816,12 +893,14 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
      */
     public final void loadUploadItemsFromDb() {
         Log_OC.d(TAG, "loadUploadItemsFromDb");
-
-        for (UploadGroup group : uploadGroups) {
-            group.refresh();
+        for (UploadGroup uploadGroup : uploadGroups) {
+            executorService.submit(() -> {
+                uploadGroup.refreshAsync(() -> {
+                    Log_OC.d(TAG, "loadUploadItemsFromDb - group '" + uploadGroup.name + "' complete");
+                    parentActivity.runOnUiThread(this::notifyDataSetChanged);
+                });
+            });
         }
-
-        notifyDataSetChanged();
     }
 
     /**
@@ -900,6 +979,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     interface Refresh {
         void refresh();
+        void refreshAsync(Runnable onComplete);
+
     }
 
     enum Type {
@@ -908,13 +989,13 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     abstract class UploadGroup implements Refresh {
         private final Type type;
-        private OCUpload[] items;
+        private final HashMap<Long, OCUpload> items = new HashMap<Long, OCUpload>();
         private final String name;
+        private final ArrayList<Runnable> onItemsUpdatedListeners = new ArrayList<>();
 
         UploadGroup(Type type, String groupName) {
             this.type = type;
             this.name = groupName;
-            items = new OCUpload[0];
         }
 
         private String getGroupName() {
@@ -922,32 +1003,66 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         }
 
         public OCUpload[] getItems() {
-            return items;
+            return items.values().toArray(new OCUpload[0]);
         }
 
         public OCUpload getItem(int position) {
-            if (items.length == 0 || position < 0 || position >= items.length) {
+            OCUpload[] itemsArr = getItems();
+            if (itemsArr.length == 0 || position < 0 || position >= itemsArr.length) {
                 return null;
             }
 
-            return items[position];
+            return itemsArr[position];
         }
 
         public void setItems(OCUpload... items) {
-            this.items = items;
+            this.items.clear();
+
+            for(OCUpload item : items) {
+                this.items.put(item.getUploadId(), item);
+            }
+
+            for (Runnable onItemsUpdatedListener : onItemsUpdatedListeners) {
+                onItemsUpdatedListener.run();
+            }
         }
 
-        void fixAndSortItems(OCUpload... array) {
+        public void upsertItems(OCUpload... items) {
+            if (items.length < 1) {
+                return;
+            }
+
+            for(OCUpload item : items) {
+                this.items.put(item.getUploadId(), item);
+            }
+
+            for (Runnable onItemsUpdatedListener : onItemsUpdatedListeners) {
+                onItemsUpdatedListener.run();
+            }
+        }
+
+        void fixAndSortItems(boolean isPartialResult, OCUpload... array) {
             for (OCUpload upload : array) {
                 upload.setDataFixed(uploadHelper);
             }
             Arrays.sort(array, new OCUploadComparator());
 
-            setItems(array);
+            if (isPartialResult) {
+                upsertItems(array);
+            } else {
+                setItems(array);
+            }
         }
 
         private int getGroupItemCount() {
-            return items == null ? 0 : items.length;
+            return items.size();
+        }
+
+        public void addItemsUpdatedListener(Runnable onItemsUpdated) {
+            onItemsUpdatedListeners.add(onItemsUpdated);
+        }
+        public void removeItemsUpdatedListener(Runnable onItemsUpdated) {
+            onItemsUpdatedListeners.remove(onItemsUpdated);
         }
     }
 
