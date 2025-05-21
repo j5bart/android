@@ -64,6 +64,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -94,7 +95,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     private final FileUploadHelper uploadHelper = FileUploadHelper.Companion.instance();
 
-    private final ExecutorService executorService = Executors.newCachedThreadPool();
+    private final ExecutorService executorService = Executors.newFixedThreadPool(2);
 
     @Override
     public int getSectionCount() {
@@ -103,7 +104,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     @Override
     public int getItemCount(int section) {
-        return uploadGroups[section].getItems().length;
+        return uploadGroups[section].getItemCount();
     }
 
     @Override
@@ -346,7 +347,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
     Lock tryNotifyDataSetChangedLock = new ReentrantLock();
 
     /**
-     * Attempts to notifyDataSetChanged only briefly
+     * Attempts to notifyDataSetChanged whilst not permitting updates more than every 500ms
      */
     private void tryNotifyDataSetChanged() {
         Log_OC.d(TAG, "tryNotifyDataSetChanged - attempting to notifyDataSetChanged");
@@ -356,11 +357,11 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         try {
             if (tryNotifyDataSetChangedLock.tryLock()) {
                 parentActivity.runOnUiThread(this::notifyDataSetChanged);
-                Thread.sleep(1000); // prevent any other updates within next 500ms
+                Thread.sleep(500); // lock out any other updates for next 500ms
                 tryNotifyDataSetChangedLock.unlock();
                 Log_OC.d(TAG, "tryNotifyDataSetChanged - notifyDataSetChanged: complete");
             } else {
-                Log_OC.d(TAG, "tryNotifyDataSetChanged - notifyDataSetChanged: failed to obtain lock within 500ms");
+                Log_OC.d(TAG, "tryNotifyDataSetChanged - notifyDataSetChanged: failed to obtain lock");
             }
         } catch (InterruptedException e) {
             Log_OC.d(TAG, "tryNotifyDataSetChanged - threw InterruptedException!");
@@ -989,9 +990,11 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     abstract class UploadGroup implements Refresh {
         private final Type type;
-        private final HashMap<Long, OCUpload> items = new HashMap<Long, OCUpload>();
+        private final ConcurrentHashMap<Long, OCUpload> items = new ConcurrentHashMap<Long, OCUpload>();
         private final String name;
         private final ArrayList<Runnable> onItemsUpdatedListeners = new ArrayList<>();
+
+        private Lock itemsBeingModified = new ReentrantLock();
 
         UploadGroup(Type type, String groupName) {
             this.type = type;
@@ -1002,25 +1005,41 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             return name;
         }
 
+        public int getItemCount() {
+            return items.size();
+        }
+
         public OCUpload[] getItems() {
-            return items.values().toArray(new OCUpload[0]);
+            getItemsLock();
+            var result = items.values().toArray(new OCUpload[0]);
+            itemsBeingModified.unlock();
+            return  result;
         }
 
         public OCUpload getItem(int position) {
-            OCUpload[] itemsArr = getItems();
+            getItemsLock();
+            var itemsArr = this.items.values()
+                .stream()
+                .skip(position)
+                .limit(1)
+                .toArray();
+            itemsBeingModified.unlock();
+
             if (itemsArr.length == 0 || position < 0 || position >= itemsArr.length) {
                 return null;
             }
-
-            return itemsArr[position];
+            return (OCUpload) itemsArr[0];
+            //return itemsArr[position];
         }
 
         public void setItems(OCUpload... items) {
+            getItemsLock();
             this.items.clear();
 
             for(OCUpload item : items) {
                 this.items.put(item.getUploadId(), item);
             }
+            itemsBeingModified.unlock();
 
             for (Runnable onItemsUpdatedListener : onItemsUpdatedListeners) {
                 onItemsUpdatedListener.run();
@@ -1032,9 +1051,12 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
                 return;
             }
 
+            getItemsLock();
+
             for(OCUpload item : items) {
                 this.items.put(item.getUploadId(), item);
             }
+            itemsBeingModified.unlock();
 
             for (Runnable onItemsUpdatedListener : onItemsUpdatedListeners) {
                 onItemsUpdatedListener.run();
@@ -1063,6 +1085,17 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         }
         public void removeItemsUpdatedListener(Runnable onItemsUpdated) {
             onItemsUpdatedListeners.remove(onItemsUpdated);
+        }
+
+        private void getItemsLock() {
+            try {
+                if (!itemsBeingModified.tryLock(10, TimeUnit.SECONDS)) {
+                    throw new RuntimeException("Failed to obtain lock in reasonable time");
+                }
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            itemsBeingModified.lock();
         }
     }
 
