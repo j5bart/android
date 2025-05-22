@@ -59,18 +59,13 @@ import com.owncloud.android.utils.theme.ViewThemeUtils;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.stream.Collectors;
 
 import androidx.annotation.NonNull;
 
@@ -990,7 +985,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     abstract class UploadGroup implements Refresh {
         private final Type type;
-        private final ConcurrentHashMap<Long, OCUpload> items = new ConcurrentHashMap<Long, OCUpload>();
+        private final ConcurrentHashMap<Long, OCUpload> itemObjects = new ConcurrentHashMap<Long, OCUpload>();
+        private final ArrayList<Long> items = new ArrayList<Long>();
         private final String name;
         private final ArrayList<Runnable> onItemsUpdatedListeners = new ArrayList<>();
 
@@ -1006,38 +1002,33 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         }
 
         public int getItemCount() {
-            return items.size();
+            return itemObjects.size();
         }
 
         public OCUpload[] getItems() {
             getItemsLock();
-            var result = items.values().toArray(new OCUpload[0]);
+            var result = itemObjects.values().toArray(new OCUpload[0]);
             itemsBeingModified.unlock();
             return  result;
         }
 
         public OCUpload getItem(int position) {
-            getItemsLock();
-            var itemsArr = this.items.values()
-                .stream()
-                .skip(position)
-                .limit(1)
-                .toArray();
-            itemsBeingModified.unlock();
-
-            if (itemsArr.length == 0 || position < 0 || position >= itemsArr.length) {
+            if (items.isEmpty() || position < 0 || position >= items.size()) {
                 return null;
             }
-            return (OCUpload) itemsArr[0];
+            long key = items.get(position);
+            return itemObjects.get(key);
             //return itemsArr[position];
         }
 
         public void setItems(OCUpload... items) {
             getItemsLock();
+            this.itemObjects.clear();
             this.items.clear();
 
             for(OCUpload item : items) {
-                this.items.put(item.getUploadId(), item);
+                this.itemObjects.put(item.getUploadId(), item);
+                this.items.add(item.getUploadId());
             }
             itemsBeingModified.unlock();
 
@@ -1054,7 +1045,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             getItemsLock();
 
             for(OCUpload item : items) {
-                this.items.put(item.getUploadId(), item);
+                this.itemObjects.put(item.getUploadId(), item);
+                this.items.add(item.getUploadId());
             }
             itemsBeingModified.unlock();
 
@@ -1077,7 +1069,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         }
 
         private int getGroupItemCount() {
-            return items.size();
+            return itemObjects.size();
         }
 
         public void addItemsUpdatedListener(Runnable onItemsUpdated) {
