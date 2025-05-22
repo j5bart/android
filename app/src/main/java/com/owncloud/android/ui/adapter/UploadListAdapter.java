@@ -335,33 +335,11 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         showUser = accountManager.getAccounts().length > 1;
 
         for (UploadGroup uploadGroup : uploadGroups) {
-            uploadGroup.addItemsUpdatedListener(this::tryNotifyDataSetChanged);
+            uploadGroup.addItemsUpdatedListener(() -> parentActivity.runOnUiThread(this::notifyDataSetChanged));
         }
     }
 
-    Lock tryNotifyDataSetChangedLock = new ReentrantLock();
 
-    /**
-     * Attempts to notifyDataSetChanged whilst not permitting updates more than every 500ms
-     */
-    private void tryNotifyDataSetChanged() {
-        Log_OC.d(TAG, "tryNotifyDataSetChanged - attempting to notifyDataSetChanged");
-        if (Looper.getMainLooper().getThread() == Thread.currentThread()) {
-            Log_OC.w(TAG, "tryNotifyDataSetChanged - being run on UI thread!");
-        }
-        try {
-            if (tryNotifyDataSetChangedLock.tryLock()) {
-                parentActivity.runOnUiThread(this::notifyDataSetChanged);
-                Thread.sleep(500); // lock out any other updates for next 500ms
-                tryNotifyDataSetChangedLock.unlock();
-                Log_OC.d(TAG, "tryNotifyDataSetChanged - notifyDataSetChanged: complete");
-            } else {
-                Log_OC.d(TAG, "tryNotifyDataSetChanged - notifyDataSetChanged: failed to obtain lock");
-            }
-        } catch (InterruptedException e) {
-            Log_OC.d(TAG, "tryNotifyDataSetChanged - threw InterruptedException!");
-        }
-    }
 
 
     @Override
@@ -1082,7 +1060,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         private void getItemsLock() {
             try {
                 if (!itemsBeingModified.tryLock(10, TimeUnit.SECONDS)) {
-                    throw new RuntimeException("Failed to obtain lock in reasonable time");
+                    Log_OC.d(TAG, "UploadGroup("+this.name+"):getItemsLock: Failed to obtain lock in reasonable time");
                 }
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
