@@ -15,7 +15,6 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
-import android.os.Looper;
 import android.text.format.DateUtils;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -60,6 +59,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -68,6 +68,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.RecyclerView;
 
 /**
  * This Adapter populates a ListView with following types of uploads: pending, active, completed. Filtering possible.
@@ -90,7 +91,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     private final FileUploadHelper uploadHelper = FileUploadHelper.Companion.instance();
 
-    private final ExecutorService executorService = Executors.newFixedThreadPool(2);
+    private ExecutorService executorService;
 
     @Override
     public int getSectionCount() {
@@ -271,12 +272,16 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             @Override
-            public void refreshAsync(Runnable onComplete) {
-                var allItems = uploadsStorageManager.getCurrentAndPendingUploadsForCurrentAccountAsync(
-                    items -> fixAndSortItems(true, items)
-                                                                                                      );
-                fixAndSortItems(false, allItems);
-                onComplete.run();
+            public CompletableFuture<Void> refreshAsync() {
+                return uploadsStorageManager.getCurrentAndPendingUploadsForCurrentAccountAsync(itemsPage ->
+                    // fix and sort partial set of items
+                    fixAndSortItems(true, itemsPage)
+                                                                                       )
+                    .thenAccept(allItems ->
+                                    // fix and sort final full set of items
+                                    fixAndSortItems(false, allItems)
+                               );
+
             }
         };
 
@@ -288,12 +293,15 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             @Override
-            public void refreshAsync(Runnable onComplete) {
-                var allItems = uploadsStorageManager.getFailedButNotDelayedUploadsForCurrentAccountAsync(
-                    items -> fixAndSortItems(true, items)
-                                                                                                         );
-                fixAndSortItems(false, allItems);
-                onComplete.run();
+            public CompletableFuture<Void> refreshAsync() {
+                return uploadsStorageManager.getFailedButNotDelayedUploadsForCurrentAccountAsync(itemsPage ->
+                                                                                                             // fix and sort partial set of items
+                                                                                                             fixAndSortItems(true, itemsPage)
+                                                                                                        )
+                    .thenAccept(allItems ->
+                                    // fix and sort final full set of items
+                                    fixAndSortItems(false, allItems)
+                               );
             }
         };
 
@@ -306,12 +314,15 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             @Override
-            public void refreshAsync(Runnable onComplete) {
-                var allItems = uploadsStorageManager.getCancelledUploadsForCurrentAccountAsync(
-                    items -> fixAndSortItems(true, items)
-                                                                                               );
-                fixAndSortItems(false, allItems);
-                onComplete.run();
+            public CompletableFuture<Void> refreshAsync() {
+                return uploadsStorageManager.getCancelledUploadsForCurrentAccountAsync(itemsPage ->
+                                                                                    // fix and sort partial set of items
+                                                                                    fixAndSortItems(true, itemsPage)
+                                                                               )
+                    .thenAccept(allItems ->
+                                    // fix and sort final full set of items
+                                    fixAndSortItems(false, allItems)
+                               );
             }
         };
 
@@ -323,12 +334,15 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             @Override
-            public void refreshAsync(Runnable onComplete) {
-                var allItems = uploadsStorageManager.getFinishedUploadsForCurrentAccountAsync(
-                    items -> fixAndSortItems(true, items)
-                                                                                              );
-                fixAndSortItems(false, allItems);
-                onComplete.run();
+            public CompletableFuture<Void> refreshAsync() {
+                return uploadsStorageManager.getFinishedUploadsForCurrentAccountAsync(itemsPage ->
+                                                                                   // fix and sort partial set of items
+                                                                                   fixAndSortItems(true, itemsPage)
+                                                                              )
+                    .thenAccept(allItems ->
+                                    // fix and sort final full set of items
+                                    fixAndSortItems(false, allItems)
+                               );
             }
         };
 
@@ -867,13 +881,17 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
      */
     public final void loadUploadItemsFromDb() {
         Log_OC.d(TAG, "loadUploadItemsFromDb");
+        if (executorService == null || executorService.isShutdown()) {
+            Log_OC.d(TAG, "loadUploadItemsFromDb() failed to start as executorService not available.");
+            return;
+        }
+
         for (UploadGroup uploadGroup : uploadGroups) {
-            executorService.submit(() -> {
-                uploadGroup.refreshAsync(() -> {
+            CompletableFuture.runAsync(uploadGroup::refreshAsync, executorService)
+                .thenRun(() -> {
                     Log_OC.d(TAG, "loadUploadItemsFromDb - group '" + uploadGroup.name + "' complete");
                     parentActivity.runOnUiThread(this::notifyDataSetChanged);
                 });
-            });
         }
     }
 
@@ -953,7 +971,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     interface Refresh {
         void refresh();
-        void refreshAsync(Runnable onComplete);
+        CompletableFuture<Void> refreshAsync();
 
     }
 
@@ -968,7 +986,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         private final String name;
         private final ArrayList<Runnable> onItemsUpdatedListeners = new ArrayList<>();
 
-        private Lock itemsBeingModified = new ReentrantLock();
+        private final Lock itemsBeingModified = new ReentrantLock();
 
         UploadGroup(Type type, String groupName) {
             this.type = type;
@@ -1005,6 +1023,10 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             this.items.clear();
 
             for(OCUpload item : items) {
+                if (Thread.currentThread().isInterrupted()) {
+                    Log_OC.w(TAG, "setItems: Interrupted");
+                    break;
+                }
                 this.itemObjects.put(item.getUploadId(), item);
                 this.items.add(item.getUploadId());
             }
@@ -1023,6 +1045,10 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             getItemsLock();
 
             for(OCUpload item : items) {
+                if (Thread.currentThread().isInterrupted()) {
+                    Log_OC.w(TAG, "upsertItems: Interrupted");
+                    break;
+                }
                 this.itemObjects.put(item.getUploadId(), item);
                 this.items.add(item.getUploadId());
             }
@@ -1081,6 +1107,26 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         mNotificationManager.cancel(NotificationUtils.createUploadNotificationTag(upload.getRemotePath(), upload.getLocalPath()),
                                     FileUploadWorker.NOTIFICATION_ERROR_ID);
 
+    }
+
+    @Override
+    public void onDetachedFromRecyclerView(@NonNull RecyclerView recyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView);
+        // Clean up resources here
+        executorService.shutdown();
+        Log_OC.d(TAG, "onDetachedFromRecyclerView()");
+    }
+
+    public void onParentActivityPause() {
+        // Clean up resources here
+        executorService.shutdown();
+        Log_OC.d(TAG, "onParentActivityPaused()");
+    }
+
+    public void onParentActivityResume() {
+        this.executorService = Executors.newFixedThreadPool(2);
+        this.loadUploadItemsFromDb();
+        Log_OC.d(TAG, "onParentActivityResume()");
     }
 
 }

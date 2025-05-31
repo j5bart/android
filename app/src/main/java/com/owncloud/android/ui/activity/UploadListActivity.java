@@ -174,7 +174,7 @@ public class UploadListActivity extends FileActivity {
         swipeListRefreshLayout.setOnRefreshListener(this::refresh);
         swipeListRefreshLayout.setVisibility(View.VISIBLE);
 
-        uploadListAdapter.loadUploadItemsFromDb();
+        uploadListAdapter.onParentActivityResume();
     }
 
     private void refresh() {
@@ -216,6 +216,9 @@ public class UploadListActivity extends FileActivity {
         uploadIntentFilter.addAction(FileUploadWorker.Companion.getUploadFinishMessage());
         localBroadcastManager.registerReceiver(uploadMessagesReceiver, uploadIntentFilter);
 
+        // Notify Upload List
+        this.uploadListAdapter.onParentActivityResume();
+
         Log_OC.v(TAG, "onResume() end");
 
     }
@@ -227,6 +230,8 @@ public class UploadListActivity extends FileActivity {
             localBroadcastManager.unregisterReceiver(uploadMessagesReceiver);
             uploadMessagesReceiver = null;
         }
+        // Notify Upload List
+        this.uploadListAdapter.onParentActivityPause();
         super.onPause();
         Log_OC.v(TAG, "onPause() end");
     }

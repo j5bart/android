@@ -46,6 +46,8 @@ import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
 import java.util.Observable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 
 import androidx.annotation.NonNull;
@@ -479,42 +481,48 @@ public class UploadsStorageManager extends Observable {
         return uploads.toArray(new OCUpload[0]);
     }
 
-    private OCUpload[] getUploadsByPageAsync(Consumer<OCUpload[]> newResultsPageCallback, @Nullable String selection, @Nullable String... selectionArgs) {
-        final List<OCUpload> uploads = new ArrayList<>();
-        long page = 0;
-        long rowsRead;
-        long rowsTotal = 0;
-        long lastRowID = -1;
+    private CompletableFuture<OCUpload[]> getUploadsByPageAsync(ExecutorService executorService, Consumer<OCUpload[]> newResultsPageCallback, @Nullable String selection, @Nullable String... selectionArgs) {
+        return CompletableFuture.supplyAsync(() -> {
+            final List<OCUpload> uploads = new ArrayList<>();
+            long page = 0;
+            long rowsRead;
+            long rowsTotal = 0;
+            long lastRowID = -1;
+            do {
+                if (Thread.currentThread().isInterrupted()) {
+                    Log_OC.w(TAG, "getUploadsByPageAsync() interrupted!");
+                    return new OCUpload[0];
+                }
 
-        do {
-            final List<OCUpload> uploadsPage = getUploadPage(lastRowID, selection, selectionArgs);
-            rowsRead = uploadsPage.size();
-            rowsTotal += rowsRead;
-            if (!uploadsPage.isEmpty()) {
-                lastRowID = uploadsPage.get(uploadsPage.size() - 1).getUploadId();
-            }
-            Log_OC.v(TAG, String.format(Locale.ENGLISH,
-                                        "getUploads() got %d rows from page %d, %d rows total so far, last ID %d",
-                                        rowsRead,
-                                        page,
-                                        rowsTotal,
-                                        lastRowID
-                                       ));
-            uploads.addAll(uploadsPage);
-            newResultsPageCallback.accept(uploadsPage.toArray(new OCUpload[0]));
-            page++;
-        } while (rowsRead > 0);
+                final List<OCUpload> uploadsPage = getUploadPage(lastRowID, selection, selectionArgs);
+                rowsRead = uploadsPage.size();
+                rowsTotal += rowsRead;
+                if (!uploadsPage.isEmpty()) {
+                    lastRowID = uploadsPage.get(uploadsPage.size() - 1).getUploadId();
+                }
+                Log_OC.v(TAG, String.format(Locale.ENGLISH,
+                                            "getUploadsByPageAsync() got %d rows from page %d, %d rows total so far, last ID %d",
+                                            rowsRead,
+                                            page,
+                                            rowsTotal,
+                                            lastRowID
+                                           ));
+                uploads.addAll(uploadsPage);
+                newResultsPageCallback.accept(uploadsPage.toArray(new OCUpload[0]));
+                page++;
+            } while (rowsRead > 0);
 
 
         Log_OC.v(TAG, String.format(Locale.ENGLISH,
-                                    "getUploads() returning %d (%d) rows after reading %d pages",
+                                    "getUploadsByPageAsync() returning %d (%d) rows after reading %d pages",
                                     rowsTotal,
                                     uploads.size(),
                                     page
                                    ));
 
 
-        return uploads.toArray(new OCUpload[0]);
+           return uploads.toArray(new OCUpload[0]);
+        }, executorService);
     }
 
     @NonNull
@@ -663,7 +671,7 @@ public class UploadsStorageManager extends Observable {
         return getCurrentAndPendingUploadsForAccount(user.getAccountName());
     }
 
-    public OCUpload[] getCurrentAndPendingUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getCurrentAndPendingUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
         User user = currentAccountProvider.getUser();
 
         return getCurrentAndPendingUploadsForAccountAsync(user.getAccountName(), resultsPageCallback);
@@ -674,7 +682,7 @@ public class UploadsStorageManager extends Observable {
         return getUploads(inProgressUploadsSelection, accountName);
     }
 
-    public OCUpload[] getCurrentAndPendingUploadsForAccountAsync(final @NonNull String accountName, Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getCurrentAndPendingUploadsForAccountAsync(final @NonNull String accountName, Consumer<OCUpload[]> resultsPageCallback) {
         String inProgressUploadsSelection = getInProgressAndDelayedUploadsSelection();
         return getUploadsByPageAsync(resultsPageCallback, inProgressUploadsSelection, accountName);
     }
@@ -730,7 +738,7 @@ public class UploadsStorageManager extends Observable {
                               ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
     }
 
-    public OCUpload[] getFinishedUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getFinishedUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
         User user = currentAccountProvider.getUser();
 
         return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_SUCCEEDED.value + AND +
@@ -744,7 +752,7 @@ public class UploadsStorageManager extends Observable {
                               ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
     }
 
-    public OCUpload[] getCancelledUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getCancelledUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
         User user = currentAccountProvider.getUser();
 
         return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_CANCELLED.value + AND +
@@ -774,7 +782,7 @@ public class UploadsStorageManager extends Observable {
                           user.getAccountName());
     }
 
-    public OCUpload[] getFailedButNotDelayedUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getFailedButNotDelayedUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
         User user = currentAccountProvider.getUser();
 
         return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_FAILED.value +
