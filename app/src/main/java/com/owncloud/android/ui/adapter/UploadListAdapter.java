@@ -272,8 +272,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             @Override
-            public CompletableFuture<Void> refreshAsync() {
-                return uploadsStorageManager.getCurrentAndPendingUploadsForCurrentAccountAsync(itemsPage ->
+            public CompletableFuture<Void> refreshAsync(ExecutorService executorService) {
+                return uploadsStorageManager.getCurrentAndPendingUploadsForCurrentAccountAsync(executorService, itemsPage ->
                     // fix and sort partial set of items
                     fixAndSortItems(true, itemsPage)
                                                                                        )
@@ -293,8 +293,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             @Override
-            public CompletableFuture<Void> refreshAsync() {
-                return uploadsStorageManager.getFailedButNotDelayedUploadsForCurrentAccountAsync(itemsPage ->
+            public CompletableFuture<Void> refreshAsync(ExecutorService executorService) {
+                return uploadsStorageManager.getFailedButNotDelayedUploadsForCurrentAccountAsync(executorService, itemsPage ->
                                                                                                              // fix and sort partial set of items
                                                                                                              fixAndSortItems(true, itemsPage)
                                                                                                         )
@@ -314,8 +314,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             @Override
-            public CompletableFuture<Void> refreshAsync() {
-                return uploadsStorageManager.getCancelledUploadsForCurrentAccountAsync(itemsPage ->
+            public CompletableFuture<Void> refreshAsync(ExecutorService executorService) {
+                return uploadsStorageManager.getCancelledUploadsForCurrentAccountAsync(executorService, itemsPage ->
                                                                                     // fix and sort partial set of items
                                                                                     fixAndSortItems(true, itemsPage)
                                                                                )
@@ -334,8 +334,8 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             @Override
-            public CompletableFuture<Void> refreshAsync() {
-                return uploadsStorageManager.getFinishedUploadsForCurrentAccountAsync(itemsPage ->
+            public CompletableFuture<Void> refreshAsync(ExecutorService executorService) {
+                return uploadsStorageManager.getFinishedUploadsForCurrentAccountAsync(executorService,  itemsPage ->
                                                                                    // fix and sort partial set of items
                                                                                    fixAndSortItems(true, itemsPage)
                                                                               )
@@ -887,7 +887,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         }
 
         for (UploadGroup uploadGroup : uploadGroups) {
-            CompletableFuture.runAsync(uploadGroup::refreshAsync, executorService)
+            CompletableFuture.runAsync(() -> uploadGroup.refreshAsync(executorService), executorService)
                 .thenRun(() -> {
                     Log_OC.d(TAG, "loadUploadItemsFromDb - group '" + uploadGroup.name + "' complete");
                     parentActivity.runOnUiThread(this::notifyDataSetChanged);
@@ -971,7 +971,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
     interface Refresh {
         void refresh();
-        CompletableFuture<Void> refreshAsync();
+        CompletableFuture<Void> refreshAsync(ExecutorService executorService);
 
     }
 
@@ -1003,9 +1003,12 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
         public OCUpload[] getItems() {
             getItemsLock();
-            var result = itemObjects.values().toArray(new OCUpload[0]);
-            itemsBeingModified.unlock();
-            return  result;
+            try {
+                var result = itemObjects.values().toArray(new OCUpload[0]);
+                return result;
+            } finally {
+                itemsBeingModified.unlock();
+            }
         }
 
         public OCUpload getItem(int position) {
@@ -1019,18 +1022,21 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
 
         public void setItems(OCUpload... items) {
             getItemsLock();
-            this.itemObjects.clear();
-            this.items.clear();
+            try {
+                this.itemObjects.clear();
+                this.items.clear();
 
-            for(OCUpload item : items) {
-                if (Thread.currentThread().isInterrupted()) {
-                    Log_OC.w(TAG, "setItems: Interrupted");
-                    break;
+                for(OCUpload item : items) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        Log_OC.w(TAG, "setItems: Interrupted");
+                        break;
+                    }
+                    this.itemObjects.put(item.getUploadId(), item);
+                    this.items.add(item.getUploadId());
                 }
-                this.itemObjects.put(item.getUploadId(), item);
-                this.items.add(item.getUploadId());
+            } finally {
+                itemsBeingModified.unlock();
             }
-            itemsBeingModified.unlock();
 
             for (Runnable onItemsUpdatedListener : onItemsUpdatedListeners) {
                 onItemsUpdatedListener.run();
@@ -1043,16 +1049,18 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             }
 
             getItemsLock();
-
-            for(OCUpload item : items) {
-                if (Thread.currentThread().isInterrupted()) {
-                    Log_OC.w(TAG, "upsertItems: Interrupted");
-                    break;
+            try {
+                for(OCUpload item : items) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        Log_OC.w(TAG, "upsertItems: Interrupted");
+                        break;
+                    }
+                    this.itemObjects.put(item.getUploadId(), item);
+                    this.items.add(item.getUploadId());
                 }
-                this.itemObjects.put(item.getUploadId(), item);
-                this.items.add(item.getUploadId());
+            } finally {
+                itemsBeingModified.unlock();
             }
-            itemsBeingModified.unlock();
 
             for (Runnable onItemsUpdatedListener : onItemsUpdatedListeners) {
                 onItemsUpdatedListener.run();
@@ -1079,6 +1087,7 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
         public void addItemsUpdatedListener(Runnable onItemsUpdated) {
             onItemsUpdatedListeners.add(onItemsUpdated);
         }
+
         public void removeItemsUpdatedListener(Runnable onItemsUpdated) {
             onItemsUpdatedListeners.remove(onItemsUpdated);
         }
@@ -1091,7 +1100,6 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
-            itemsBeingModified.lock();
         }
     }
 
@@ -1124,7 +1132,10 @@ public class UploadListAdapter extends SectionedRecyclerViewAdapter<SectionedVie
     }
 
     public void onParentActivityResume() {
-        this.executorService = Executors.newFixedThreadPool(2);
+        if (this.executorService == null || this.executorService.isShutdown()) {
+            this.executorService = Executors.newFixedThreadPool(2);
+        }
+
         this.loadUploadItemsFromDb();
         Log_OC.d(TAG, "onParentActivityResume()");
     }

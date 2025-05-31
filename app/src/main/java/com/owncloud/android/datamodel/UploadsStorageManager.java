@@ -487,8 +487,8 @@ public class UploadsStorageManager extends Observable {
             long rowsTotal = 0;
             long lastRowID = -1;
             do {
-                if (Thread.currentThread().isInterrupted()) {
-                    Log_OC.w(TAG, "getUploadsByPageAsync() interrupted!");
+                if (executorService == null || executorService.isShutdown() || Thread.currentThread().isInterrupted()) {
+                    Log_OC.w(TAG, "getUploadsByPageAsync() execution interrupted!");
                     return new OCUpload[0];
                 }
 
@@ -669,10 +669,10 @@ public class UploadsStorageManager extends Observable {
         return getCurrentAndPendingUploadsForAccount(user.getAccountName());
     }
 
-    public CompletableFuture<OCUpload[]> getCurrentAndPendingUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getCurrentAndPendingUploadsForCurrentAccountAsync(ExecutorService executorService, Consumer<OCUpload[]> resultsPageCallback) {
         User user = currentAccountProvider.getUser();
 
-        return getCurrentAndPendingUploadsForAccountAsync(user.getAccountName(), resultsPageCallback);
+        return getCurrentAndPendingUploadsForAccountAsync(user.getAccountName(), executorService, resultsPageCallback);
     }
 
     public OCUpload[] getCurrentAndPendingUploadsForAccount(final @NonNull String accountName) {
@@ -680,9 +680,9 @@ public class UploadsStorageManager extends Observable {
         return getUploads(inProgressUploadsSelection, accountName);
     }
 
-    public CompletableFuture<OCUpload[]> getCurrentAndPendingUploadsForAccountAsync(final @NonNull String accountName, Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getCurrentAndPendingUploadsForAccountAsync(final @NonNull String accountName, ExecutorService executorService, Consumer<OCUpload[]> resultsPageCallback) {
         String inProgressUploadsSelection = getInProgressAndDelayedUploadsSelection();
-        return getUploadsByPageAsync(resultsPageCallback, inProgressUploadsSelection, accountName);
+        return getUploadsByPageAsync(executorService, resultsPageCallback, inProgressUploadsSelection, accountName);
     }
 
     public OCUpload[] getCurrentUploadsForAccount(final @NonNull String accountName) {
@@ -736,10 +736,10 @@ public class UploadsStorageManager extends Observable {
                               ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
     }
 
-    public CompletableFuture<OCUpload[]> getFinishedUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getFinishedUploadsForCurrentAccountAsync(ExecutorService executorService, Consumer<OCUpload[]> resultsPageCallback) {
         User user = currentAccountProvider.getUser();
 
-        return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_SUCCEEDED.value + AND +
+        return getUploadsByPageAsync(executorService, resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_SUCCEEDED.value + AND +
                               ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
     }
 
@@ -750,10 +750,10 @@ public class UploadsStorageManager extends Observable {
                               ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
     }
 
-    public CompletableFuture<OCUpload[]> getCancelledUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getCancelledUploadsForCurrentAccountAsync(ExecutorService executorService, Consumer<OCUpload[]> resultsPageCallback) {
         User user = currentAccountProvider.getUser();
 
-        return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_CANCELLED.value + AND +
+        return getUploadsByPageAsync(executorService, resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_CANCELLED.value + AND +
                               ProviderTableMeta.UPLOADS_ACCOUNT_NAME + IS_EQUAL, user.getAccountName());
     }
 
@@ -780,10 +780,10 @@ public class UploadsStorageManager extends Observable {
                           user.getAccountName());
     }
 
-    public CompletableFuture<OCUpload[]> getFailedButNotDelayedUploadsForCurrentAccountAsync(Consumer<OCUpload[]> resultsPageCallback) {
+    public CompletableFuture<OCUpload[]> getFailedButNotDelayedUploadsForCurrentAccountAsync(ExecutorService executorService, Consumer<OCUpload[]> resultsPageCallback) {
         User user = currentAccountProvider.getUser();
 
-        return getUploadsByPageAsync(resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_FAILED.value +
+        return getUploadsByPageAsync(executorService, resultsPageCallback, ProviderTableMeta.UPLOADS_STATUS + EQUAL + UploadStatus.UPLOAD_FAILED.value +
                               AND + ProviderTableMeta.UPLOADS_LAST_RESULT +
                               ANGLE_BRACKETS + UploadResult.DELAYED_FOR_WIFI.getValue() +
                               AND + ProviderTableMeta.UPLOADS_LAST_RESULT +
